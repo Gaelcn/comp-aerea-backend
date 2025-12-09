@@ -106,6 +106,7 @@ const schema = buildSchema(`
         codigo_avion: String!
         codigo_piloto: String!
         estado: String!
+        codigos_tripulacion: [String!]
     }
 
     type Query {
@@ -162,10 +163,13 @@ const schema = buildSchema(`
         # Asignar tripulación a vuelos
         asignarTripulacionVuelo(numero_vuelo: String!, codigo_tripulante: String!): Boolean
         desasignarTripulacionVuelo(numero_vuelo: String!, codigo_tripulante: String!): Boolean
+        
+        # Nueva mutación para asignar múltiples tripulantes
+        asignarMultipleTripulacionVuelo(numero_vuelo: String!, codigos_tripulacion: [String!]!): Boolean
     }
 `);
 
-// Resolvers COMPLETOS
+// Resolvers COMPLETOS actualizados
 const root = {
     // ========== QUERIES ==========
     
@@ -485,56 +489,171 @@ const root = {
         return true;
     },
 
-    // Vuelos
+    // Vuelos - ACTUALIZADO para manejar tripulación
     crearVuelo: async ({ input }) => {
         const connection = await mysql.createConnection(dbConfig);
-        await connection.execute(
-            'INSERT INTO vuelos (numero_vuelo, origen, destino, hora_salida, fecha_vuelo, codigo_avion, codigo_piloto, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [input.numero_vuelo, input.origen, input.destino, input.hora_salida, input.fecha_vuelo, input.codigo_avion, input.codigo_piloto, input.estado]
-        );
-        await connection.end();
-        return input;
+        
+        try {
+            await connection.beginTransaction();
+            
+            // 1. Crear el vuelo
+            await connection.execute(
+                'INSERT INTO vuelos (numero_vuelo, origen, destino, hora_salida, fecha_vuelo, codigo_avion, codigo_piloto, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [input.numero_vuelo, input.origen, input.destino, input.hora_salida, input.fecha_vuelo, input.codigo_avion, input.codigo_piloto, input.estado]
+            );
+            
+            // 2. Asignar tripulación si se proporciona
+            if (input.codigos_tripulacion && input.codigos_tripulacion.length > 0) {
+                // Eliminar duplicados
+                const codigosUnicos = [...new Set(input.codigos_tripulacion)];
+                
+                for (const codigo_tripulante of codigosUnicos) {
+                    await connection.execute(
+                        'INSERT INTO vuelo_tripulacion (numero_vuelo, codigo_tripulante) VALUES (?, ?)',
+                        [input.numero_vuelo, codigo_tripulante]
+                    );
+                }
+            }
+            
+            await connection.commit();
+            return input;
+            
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            await connection.end();
+        }
     },
 
     actualizarVuelo: async ({ numero_vuelo, input }) => {
         const connection = await mysql.createConnection(dbConfig);
-        await connection.execute(
-            'UPDATE vuelos SET origen = ?, destino = ?, hora_salida = ?, fecha_vuelo = ?, codigo_avion = ?, codigo_piloto = ?, estado = ? WHERE numero_vuelo = ?',
-            [input.origen, input.destino, input.hora_salida, input.fecha_vuelo, input.codigo_avion, input.codigo_piloto, input.estado, numero_vuelo]
-        );
-        await connection.end();
-        return { ...input, numero_vuelo };
+        
+        try {
+            await connection.beginTransaction();
+            
+            // 1. Actualizar datos básicos del vuelo
+            await connection.execute(
+                'UPDATE vuelos SET origen = ?, destino = ?, hora_salida = ?, fecha_vuelo = ?, codigo_avion = ?, codigo_piloto = ?, estado = ? WHERE numero_vuelo = ?',
+                [input.origen, input.destino, input.hora_salida, input.fecha_vuelo, input.codigo_avion, input.codigo_piloto, input.estado, numero_vuelo]
+            );
+            
+            // 2. Actualizar tripulación si se proporciona
+            if (input.codigos_tripulacion !== undefined) {
+                // Eliminar todas las asignaciones existentes
+                await connection.execute(
+                    'DELETE FROM vuelo_tripulacion WHERE numero_vuelo = ?',
+                    [numero_vuelo]
+                );
+                
+                // Agregar las nuevas asignaciones
+                if (input.codigos_tripulacion && input.codigos_tripulacion.length > 0) {
+                    // Eliminar duplicados
+                    const codigosUnicos = [...new Set(input.codigos_tripulacion)];
+                    
+                    for (const codigo_tripulante of codigosUnicos) {
+                        await connection.execute(
+                            'INSERT INTO vuelo_tripulacion (numero_vuelo, codigo_tripulante) VALUES (?, ?)',
+                            [numero_vuelo, codigo_tripulante]
+                        );
+                    }
+                }
+            }
+            
+            await connection.commit();
+            return { ...input, numero_vuelo };
+            
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            await connection.end();
+        }
     },
 
     eliminarVuelo: async ({ numero_vuelo }) => {
         const connection = await mysql.createConnection(dbConfig);
-        // Primero eliminar las asignaciones de tripulación
-        await connection.execute('DELETE FROM vuelo_tripulacion WHERE numero_vuelo = ?', [numero_vuelo]);
-        // Luego eliminar el vuelo
-        await connection.execute('DELETE FROM vuelos WHERE numero_vuelo = ?', [numero_vuelo]);
-        await connection.end();
-        return true;
+        try {
+            await connection.beginTransaction();
+            
+            // Primero eliminar las asignaciones de tripulación
+            await connection.execute('DELETE FROM vuelo_tripulacion WHERE numero_vuelo = ?', [numero_vuelo]);
+            // Luego eliminar el vuelo
+            await connection.execute('DELETE FROM vuelos WHERE numero_vuelo = ?', [numero_vuelo]);
+            
+            await connection.commit();
+            return true;
+            
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            await connection.end();
+        }
     },
 
-    // Asignación de tripulación a vuelos
+    // Nueva mutación para asignar múltiples tripulantes
+    asignarMultipleTripulacionVuelo: async ({ numero_vuelo, codigos_tripulacion }) => {
+        const connection = await mysql.createConnection(dbConfig);
+        
+        try {
+            await connection.beginTransaction();
+            
+            // Eliminar duplicados
+            const codigosUnicos = [...new Set(codigos_tripulacion)];
+            
+            for (const codigo_tripulante of codigosUnicos) {
+                // Verificar si ya existe la asignación
+                const [existing] = await connection.execute(
+                    'SELECT * FROM vuelo_tripulacion WHERE numero_vuelo = ? AND codigo_tripulante = ?',
+                    [numero_vuelo, codigo_tripulante]
+                );
+                
+                // Solo insertar si no existe
+                if (existing.length === 0) {
+                    await connection.execute(
+                        'INSERT INTO vuelo_tripulacion (numero_vuelo, codigo_tripulante) VALUES (?, ?)',
+                        [numero_vuelo, codigo_tripulante]
+                    );
+                }
+            }
+            
+            await connection.commit();
+            return true;
+            
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            await connection.end();
+        }
+    },
+
+    // Asignación de tripulación a vuelos (una sola tripulante)
     asignarTripulacionVuelo: async ({ numero_vuelo, codigo_tripulante }) => {
         const connection = await mysql.createConnection(dbConfig);
-        await connection.execute(
-            'INSERT INTO vuelo_tripulacion (numero_vuelo, codigo_tripulante) VALUES (?, ?)',
-            [numero_vuelo, codigo_tripulante]
-        );
-        await connection.end();
-        return true;
+        try {
+            await connection.execute(
+                'INSERT INTO vuelo_tripulacion (numero_vuelo, codigo_tripulante) VALUES (?, ?)',
+                [numero_vuelo, codigo_tripulante]
+            );
+            return true;
+        } finally {
+            await connection.end();
+        }
     },
 
     desasignarTripulacionVuelo: async ({ numero_vuelo, codigo_tripulante }) => {
         const connection = await mysql.createConnection(dbConfig);
-        await connection.execute(
-            'DELETE FROM vuelo_tripulacion WHERE numero_vuelo = ? AND codigo_tripulante = ?',
-            [numero_vuelo, codigo_tripulante]
-        );
-        await connection.end();
-        return true;
+        try {
+            await connection.execute(
+                'DELETE FROM vuelo_tripulacion WHERE numero_vuelo = ? AND codigo_tripulante = ?',
+                [numero_vuelo, codigo_tripulante]
+            );
+            return true;
+        } finally {
+            await connection.end();
+        }
     }
 };
 
