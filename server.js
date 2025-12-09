@@ -132,6 +132,11 @@ const schema = buildSchema(`
         # Vuelos
         vuelos: [Vuelo]
         vuelo(numero_vuelo: String!): Vuelo
+
+        # Nuevas queries para validaciones
+        avionTieneVuelos(codigo_avion: String!): Boolean
+        pilotoTieneVuelos(codigo_piloto: String!): Boolean
+        tripulanteTieneVuelos(codigo_tripulante: String!): Boolean
     }
 
     type Mutation {
@@ -653,6 +658,56 @@ const root = {
             return true;
         } finally {
             await connection.end();
+        }
+    },
+    
+    avionTieneVuelos: async ({ codigo_avion }) => {
+        const connection = await mysql.createConnection(dbConfig);
+        try {
+            const [rows] = await connection.execute(
+                'SELECT COUNT(*) as count FROM vuelos WHERE codigo_avion = ?',
+                [codigo_avion]
+            );
+            await connection.end();
+            return rows[0].count > 0;
+        } catch (error) {
+            console.error('Error verificando vuelos del avión:', error);
+            await connection.end();
+            return false;
+        }
+    },
+
+    // Verificar si un piloto tiene vuelos asignados
+    pilotoTieneVuelos: async ({ codigo_piloto }) => {
+        const connection = await mysql.createConnection(dbConfig);
+        try {
+            const [rows] = await connection.execute(
+                'SELECT COUNT(*) as count FROM vuelos WHERE codigo_piloto = ?',
+                [codigo_piloto]
+            );
+            await connection.end();
+            return rows[0].count > 0;
+        } catch (error) {
+            console.error('Error verificando vuelos del piloto:', error);
+            await connection.end();
+            return false;
+        }
+    },
+
+    // Verificar si un tripulante tiene vuelos asignados
+    tripulanteTieneVuelos: async ({ codigo_tripulante }) => {
+        const connection = await mysql.createConnection(dbConfig);
+        try {
+            const [rows] = await connection.execute(
+                'SELECT COUNT(*) as count FROM vuelo_tripulacion WHERE codigo_tripulante = ?',
+                [codigo_tripulante]
+            );
+            await connection.end();
+            return rows[0].count > 0;
+        } catch (error) {
+            console.error('Error verificando vuelos del tripulante:', error);
+            await connection.end();
+            return false;
         }
     }
 };
